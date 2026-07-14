@@ -1,0 +1,29 @@
+listen:
+  dns: ":53"
+  http: ":80"
+  https: ":443"
+
+# The public IP of this server. Handed out for domains in the smart-routed
+# list below, so subsequent HTTP/HTTPS connections land back on this proxy.
+public_ip: "203.0.113.10"
+
+# DNS servers used to (a) resolve non-smart-routed queries and (b) look up
+# the real origin IP of smart-routed domains before proxying traffic to them.
+upstream_dns:
+  - "1.1.1.1:53"
+  - "8.8.8.8:53"
+
+# Domains handled by this smart DNS. Listing a domain also matches all of its
+# subdomains (e.g. "example.com" matches "www.example.com").
+domains:
+  - example.com
+
+# Optional allowlist of client IPs/CIDRs permitted to use this service.
+# Leave empty to allow everyone (fine for local testing, not recommended in
+# production). Bare IPs (e.g. 203.0.113.5) or full CIDR ranges
+# (e.g. 203.0.113.0/24) are both accepted.
+allowed_cidrs: []
+
+# Copy this file to config.yaml and fill in your real values.
+# config.yaml is gitignored so your real public IP / client allowlist never
+# ends up in version control.

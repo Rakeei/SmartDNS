@@ -1,0 +1,12 @@
+services:
+  smartdns:
+    build: .
+    container_name: smartdns
+    restart: unless-stopped
+    ports:
+      - "53:53/udp"
+      - "53:53/tcp"
+      - "80:80/tcp"
+      - "443:443/tcp"
+    volumes:
+      - ./config.yaml:/etc/smartdns/config.yaml:ro
