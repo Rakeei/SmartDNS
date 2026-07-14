@@ -14,6 +14,16 @@ import (
 
 var ErrNoRecord = errors.New("resolver: no A record found")
 
+// maxCacheEntries bounds the resolver cache so a flood of lookups for
+// distinct hostnames (e.g. many subdomains of a smart-routed domain) can't
+// grow it without limit.
+const maxCacheEntries = 10000
+
+// cacheSweepInterval controls how often expired entries are purged, so
+// entries whose TTL passed are reclaimed even without a fresh lookup for
+// the same domain.
+const cacheSweepInterval = 5 * time.Minute
+
 type cacheEntry struct {
 	ip      string
 	expires time.Time
@@ -33,7 +43,25 @@ func New(upstream []string) *Resolver {
 		cache:  make(map[string]cacheEntry),
 	}
 	r.UpdateUpstream(upstream)
+	go r.sweepLoop()
 	return r
+}
+
+// sweepLoop periodically drops expired cache entries so memory used by
+// stale lookups is reclaimed even for domains that are never queried again.
+func (r *Resolver) sweepLoop() {
+	ticker := time.NewTicker(cacheSweepInterval)
+	defer ticker.Stop()
+	for range ticker.C {
+		now := time.Now()
+		r.mu.Lock()
+		for domain, e := range r.cache {
+			if now.After(e.expires) {
+				delete(r.cache, domain)
+			}
+		}
+		r.mu.Unlock()
+	}
 }
 
 // UpdateUpstream atomically swaps the list of upstream DNS servers used for
@@ -92,5 +120,11 @@ func (r *Resolver) fromCache(domain string) (string, bool) {
 func (r *Resolver) toCache(domain, ip string, ttl time.Duration) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if _, exists := r.cache[domain]; !exists && len(r.cache) >= maxCacheEntries {
+		// Cache is full of still-live entries and this is a new domain:
+		// drop the insert rather than growing past the cap. The next sweep
+		// or a naturally expiring entry will free up room.
+		return
+	}
 	r.cache[domain] = cacheEntry{ip: ip, expires: time.Now().Add(ttl)}
 }

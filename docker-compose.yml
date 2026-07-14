@@ -10,3 +10,16 @@ services:
       - "443:443/tcp"
     volumes:
       - ./config.yaml:/etc/smartdns/config.yaml:ro
+    environment:
+      # Backstop for the Go garbage collector: keep the heap under the
+      # container's memory limit instead of relying on GOGC alone, so the
+      # process shrinks its own memory rather than getting OOM-killed.
+      - GOMEMLIMIT=224MiB
+      # Matches the cpus limit below so the Go scheduler doesn't spin up
+      # more OS threads than the container is actually allowed to use.
+      - GOMAXPROCS=1
+    # Hard resource ceiling enforced by the container runtime (cgroups).
+    # Applies directly to `docker compose up`, no swarm required.
+    mem_limit: 256m
+    mem_reservation: 128m
+    cpus: 1.0

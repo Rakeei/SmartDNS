@@ -23,15 +23,24 @@ const (
 	handshakeClientHello  = 0x01
 	extensionServerName   = 0x0000
 	handshakeReadDeadline = 10 * time.Second
+
+	// maxConcurrentConns bounds how many client connections can be relayed
+	// at once. Each relayed connection holds two goroutines and buffers for
+	// the lifetime of the TCP stream, so without a cap a burst of slow or
+	// long-lived connections can drive memory/goroutine count arbitrarily
+	// high. Connections beyond the limit are rejected immediately instead
+	// of queuing, so the accept loop never blocks.
+	maxConcurrentConns = 1000
 )
 
 type Proxy struct {
 	store *config.Store
 	res   *resolver.Resolver
+	slots chan struct{}
 }
 
 func New(store *config.Store, res *resolver.Resolver) *Proxy {
-	return &Proxy{store: store, res: res}
+	return &Proxy{store: store, res: res, slots: make(chan struct{}, maxConcurrentConns)}
 }
 
 func (p *Proxy) ListenAndServe(addr string) error {
@@ -46,11 +55,18 @@ func (p *Proxy) ListenAndServe(addr string) error {
 		if err != nil {
 			return err
 		}
-		go p.handle(conn)
+
+		select {
+		case p.slots <- struct{}{}:
+			go p.handle(conn)
+		default:
+			conn.Close()
+		}
 	}
 }
 
 func (p *Proxy) handle(client net.Conn) {
+	defer func() { <-p.slots }()
 	defer client.Close()
 
 	cfg := p.store.Get()
