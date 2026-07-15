@@ -1,2 +1,4 @@
 /smartdns
 /config.yaml
+/domains.txt
+/allowed_ips.txt

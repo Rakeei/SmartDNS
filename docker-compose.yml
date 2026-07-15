@@ -10,6 +10,9 @@ services:
       - "443:443/tcp"
     volumes:
       - ./config.yaml:/etc/smartdns/config.yaml:ro
+      # Not :ro — `smartdns add-domain` / `smartdns add-ip` write to these.
+      - ./domains.txt:/etc/smartdns/domains.txt
+      - ./allowed_ips.txt:/etc/smartdns/allowed_ips.txt
     environment:
       # Backstop for the Go garbage collector: keep the heap under the
       # container's memory limit instead of relying on GOGC alone, so the
