@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -89,4 +90,45 @@ func appendUnique(path, value string) (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+// RemoveLine removes the first entry equal to value from the list file at
+// path (comments and blank lines are left untouched), rewriting the file in
+// place. It reports whether an entry was actually removed.
+//
+// The file is rewritten via os.WriteFile, which truncates and rewrites the
+// existing file in place rather than renaming a new one over it — important
+// because domains.txt/allowed_ips.txt are typically Docker single-file bind
+// mounts, and a rename-based rewrite (as e.g. `sed -i` does) would silently
+// swap the underlying inode out from under the mount.
+func RemoveLine(path, value string) (bool, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	var lines []string
+	removed := false
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := sc.Text()
+		if !removed && strings.TrimSpace(line) == value {
+			removed = true
+			continue
+		}
+		lines = append(lines, line)
+	}
+	scErr := sc.Err()
+	f.Close()
+	if scErr != nil {
+		return false, scErr
+	}
+	if !removed {
+		return false, nil
+	}
+
+	content := strings.Join(lines, "\n")
+	if len(lines) > 0 {
+		content += "\n"
+	}
+	return true, os.WriteFile(path, []byte(content), 0644)
 }

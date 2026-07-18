@@ -12,6 +12,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -37,9 +38,18 @@ const (
 	stateAwaitingIP
 )
 
-// Bot is a minimal long-polling Telegram bot scoped to two admin actions:
-// appending a domain or an IP/CIDR to smartdns's list files and reloading
-// the live config so the change takes effect immediately.
+// pendingRemoval is the snapshot of a list shown to an admin as removal
+// buttons, so a later button tap can be resolved back to a value by index
+// without re-reading (and possibly racing) the file.
+type pendingRemoval struct {
+	kind  string // "domain" or "ip"
+	items []string
+}
+
+// Bot is a minimal long-polling Telegram bot scoped to admin list
+// management: adding/removing a domain or an IP/CIDR in smartdns's list
+// files and reloading the live config so the change takes effect
+// immediately.
 type Bot struct {
 	token       string
 	admins      map[int64]bool
@@ -48,12 +58,13 @@ type Bot struct {
 	reload      func() error
 	client      *http.Client
 
-	mu     sync.Mutex
-	states map[int64]convState
+	mu       sync.Mutex
+	states   map[int64]convState
+	removals map[int64]pendingRemoval
 }
 
-// New builds a Bot. reload is called after every successful add so the
-// change takes effect without restarting smartdns.
+// New builds a Bot. reload is called after every successful add/remove so
+// the change takes effect without restarting smartdns.
 func New(token string, adminIDs []int64, domainsFile, cidrsFile string, reload func() error) *Bot {
 	admins := make(map[int64]bool, len(adminIDs))
 	for _, id := range adminIDs {
@@ -67,6 +78,7 @@ func New(token string, adminIDs []int64, domainsFile, cidrsFile string, reload f
 		reload:      reload,
 		client:      &http.Client{Timeout: pollTimeout + httpClientSlop},
 		states:      make(map[int64]convState),
+		removals:    make(map[int64]pendingRemoval),
 	}
 }
 
@@ -236,17 +248,85 @@ func (b *Bot) handleCallback(cq callbackQuery) {
 		return
 	}
 
-	switch cq.Data {
-	case "add_domain":
+	switch {
+	case cq.Data == "add_domain":
 		b.setState(fromID, stateAwaitingDomain)
 		b.reply(chatID, "نام دامنه رو بفرست، مثلاً example.com")
-	case "add_ip":
+	case cq.Data == "add_ip":
 		b.setState(fromID, stateAwaitingIP)
 		b.reply(chatID, "آی‌پی یا CIDR رو بفرست، مثلاً 203.0.113.5 یا 203.0.113.0/24")
-	case "list":
+	case cq.Data == "rm_domain_menu":
+		b.showRemovalMenu(chatID, fromID, "domain", b.domainsFile, "دامنه")
+	case cq.Data == "rm_ip_menu":
+		b.showRemovalMenu(chatID, fromID, "ip", b.cidrsFile, "آی‌پی")
+	case strings.HasPrefix(cq.Data, "rm_domain:"):
+		b.handleRemoval(chatID, fromID, "domain", b.domainsFile, "دامنه", cq.Data)
+	case strings.HasPrefix(cq.Data, "rm_ip:"):
+		b.handleRemoval(chatID, fromID, "ip", b.cidrsFile, "آی‌پی", cq.Data)
+	case cq.Data == "list":
 		b.clearState(fromID)
 		b.list(chatID)
 	}
+}
+
+// showRemovalMenu lists the current entries of the given list file as
+// individual removal buttons, and remembers the snapshot under fromID so a
+// subsequent button tap can be resolved back to a value.
+func (b *Bot) showRemovalMenu(chatID, fromID int64, kind, file, label string) {
+	items, err := config.ReadList(file)
+	if err != nil {
+		b.reply(chatID, fmt.Sprintf("خطا در خواندن لیست: %v", err))
+		return
+	}
+	if len(items) == 0 {
+		b.reply(chatID, fmt.Sprintf("لیست %s خالیه.", label))
+		return
+	}
+
+	b.setPendingRemoval(fromID, kind, items)
+
+	prefix := "rm_" + kind + ":"
+	rows := make([][]inlineKeyboardButton, 0, len(items))
+	for i, item := range items {
+		rows = append(rows, []inlineKeyboardButton{
+			{Text: "🗑 " + item, CallbackData: fmt.Sprintf("%s%d", prefix, i)},
+		})
+	}
+	b.sendKeyboard(chatID, fmt.Sprintf("کدوم %s حذف بشه؟", label), rows)
+}
+
+// handleRemoval resolves a "rm_domain:<idx>"/"rm_ip:<idx>" button tap
+// against the snapshot shown to fromID and removes that entry.
+func (b *Bot) handleRemoval(chatID, fromID int64, kind, file, label, data string) {
+	idx, err := strconv.Atoi(strings.TrimPrefix(data, "rm_"+kind+":"))
+	if err != nil {
+		return
+	}
+
+	pending, ok := b.getPendingRemoval(fromID)
+	if !ok || pending.kind != kind || idx < 0 || idx >= len(pending.items) {
+		b.reply(chatID, "این لیست منقضی شده، دوباره از منو انتخاب کن.")
+		return
+	}
+	value := pending.items[idx]
+
+	removed, err := config.RemoveLine(file, value)
+	if err != nil {
+		b.reply(chatID, fmt.Sprintf("خطا: %v", err))
+		return
+	}
+	if !removed {
+		b.reply(chatID, fmt.Sprintf("%s از قبل توی لیست نبود: %s", label, value))
+		b.clearPendingRemoval(fromID)
+		return
+	}
+	if err := b.reload(); err != nil {
+		b.reply(chatID, fmt.Sprintf("%s حذف شد ولی اعمال (reload) شکست خورد: %v", label, err))
+		b.clearPendingRemoval(fromID)
+		return
+	}
+	b.clearPendingRemoval(fromID)
+	b.reply(chatID, fmt.Sprintf("✅ %s حذف و اعمال شد: %s", label, value))
 }
 
 // consumeState handles a plain-text reply to an in-progress guided flow. It
@@ -282,10 +362,32 @@ func (b *Bot) setState(id int64, s convState) {
 	b.states[id] = s
 }
 
+// clearState resets an admin's guided-flow state, including any pending
+// removal-selection snapshot, back to idle.
 func (b *Bot) clearState(id int64) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	delete(b.states, id)
+	delete(b.removals, id)
+}
+
+func (b *Bot) setPendingRemoval(id int64, kind string, items []string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.removals[id] = pendingRemoval{kind: kind, items: items}
+}
+
+func (b *Bot) getPendingRemoval(id int64) (pendingRemoval, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	p, ok := b.removals[id]
+	return p, ok
+}
+
+func (b *Bot) clearPendingRemoval(id int64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	delete(b.removals, id)
 }
 
 // addDomain validates and appends domain, replies with the result, and
@@ -357,16 +459,21 @@ type inlineKeyboardMarkup struct {
 }
 
 func (b *Bot) sendMenu(chatID int64) {
-	markup := &inlineKeyboardMarkup{InlineKeyboard: [][]inlineKeyboardButton{
+	b.sendKeyboard(chatID, "چی می‌خوای انجام بدی؟", [][]inlineKeyboardButton{
 		{{Text: "➕ افزودن دامنه", CallbackData: "add_domain"}},
+		{{Text: "➖ حذف دامنه", CallbackData: "rm_domain_menu"}},
 		{{Text: "➕ افزودن آی‌پی", CallbackData: "add_ip"}},
+		{{Text: "➖ حذف آی‌پی", CallbackData: "rm_ip_menu"}},
 		{{Text: "📋 لیست فعلی", CallbackData: "list"}},
-	}}
-	b.send(chatID, "چی می‌خوای اضافه کنی؟", markup)
+	})
 }
 
 func (b *Bot) reply(chatID int64, text string) {
 	b.send(chatID, text, nil)
+}
+
+func (b *Bot) sendKeyboard(chatID int64, text string, rows [][]inlineKeyboardButton) {
+	b.send(chatID, text, &inlineKeyboardMarkup{InlineKeyboard: rows})
 }
 
 func (b *Bot) send(chatID int64, text string, markup *inlineKeyboardMarkup) {
