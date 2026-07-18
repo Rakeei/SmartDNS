@@ -7,6 +7,12 @@ listen:
 # list below, so subsequent HTTP/HTTPS connections land back on this proxy.
 public_ip: "203.0.113.10"
 
+# Optional: this server's public IPv6, handed out for AAAA queries on
+# smart-routed domains. Leave unset if the server has no real, routable
+# IPv6 — AAAA queries for smart domains then get an empty (NOERROR/no data)
+# response instead, which is safe and just pushes clients back onto A.
+# public_ipv6: "2001:db8::1"
+
 # DNS servers used to (a) resolve non-smart-routed queries and (b) look up
 # the real origin IP of smart-routed domains before proxying traffic to them.
 upstream_dns:

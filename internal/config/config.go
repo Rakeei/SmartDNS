@@ -18,12 +18,14 @@ type Config struct {
 	} `yaml:"listen"`
 
 	PublicIP     string   `yaml:"public_ip"`
+	PublicIPv6   string   `yaml:"public_ipv6"`
 	UpstreamDNS  []string `yaml:"upstream_dns"`
 	Domains      []string `yaml:"domains"`
 	AllowedCIDRs []string `yaml:"allowed_cidrs"`
 
-	publicIP net.IP
-	allowed  []*net.IPNet
+	publicIP   net.IP
+	publicIPv6 net.IP
+	allowed    []*net.IPNet
 }
 
 // Load reads and validates a config file from path.
@@ -57,8 +59,15 @@ func (c *Config) validate() error {
 		return fmt.Errorf("public_ip is required")
 	}
 	c.publicIP = net.ParseIP(c.PublicIP)
-	if c.publicIP == nil {
-		return fmt.Errorf("invalid public_ip: %s", c.PublicIP)
+	if c.publicIP == nil || c.publicIP.To4() == nil {
+		return fmt.Errorf("invalid public_ip (must be IPv4): %s", c.PublicIP)
+	}
+
+	if c.PublicIPv6 != "" {
+		c.publicIPv6 = net.ParseIP(c.PublicIPv6)
+		if c.publicIPv6 == nil || c.publicIPv6.To4() != nil {
+			return fmt.Errorf("invalid public_ipv6 (must be IPv6): %s", c.PublicIPv6)
+		}
 	}
 
 	if len(c.UpstreamDNS) == 0 {
@@ -96,8 +105,12 @@ func (c *Config) validate() error {
 	return nil
 }
 
-// PublicIPAddr returns the IP handed out for smart-routed domains.
+// PublicIPAddr returns the IPv4 handed out for smart-routed domains' A records.
 func (c *Config) PublicIPAddr() net.IP { return c.publicIP }
+
+// PublicIPv6Addr returns the IPv6 handed out for smart-routed domains' AAAA
+// records, or nil if no public_ipv6 is configured.
+func (c *Config) PublicIPv6Addr() net.IP { return c.publicIPv6 }
 
 // MatchesDomain reports whether qname (or one of its parent zones) is in the smart-routed domain list.
 func (c *Config) MatchesDomain(qname string) bool {
