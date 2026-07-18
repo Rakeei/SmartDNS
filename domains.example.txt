@@ -1,0 +1,3 @@
+# One domain per line. Subdomains are matched automatically
+# (e.g. "example.com" also matches "www.example.com").
+example.com

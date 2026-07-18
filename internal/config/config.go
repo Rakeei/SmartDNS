@@ -1,9 +1,11 @@
 package config
 
 import (
+	"bufio"
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -17,11 +19,27 @@ type Config struct {
 		HTTPS string `yaml:"https"`
 	} `yaml:"listen"`
 
-	PublicIP     string   `yaml:"public_ip"`
-	PublicIPv6   string   `yaml:"public_ipv6"`
-	UpstreamDNS  []string `yaml:"upstream_dns"`
+	PublicIP    string   `yaml:"public_ip"`
+	PublicIPv6  string   `yaml:"public_ipv6"`
+	UpstreamDNS []string `yaml:"upstream_dns"`
+
+	// Domains and AllowedCIDRs are the effective, loaded lists. They can be
+	// set inline in the YAML for backwards compatibility, but normally come
+	// from DomainsFile / AllowedCIDRsFile so they can be edited (e.g. via
+	// `smartdns add-domain` / `smartdns add-ip`) without touching the rest
+	// of the config.
 	Domains      []string `yaml:"domains"`
 	AllowedCIDRs []string `yaml:"allowed_cidrs"`
+
+	DomainsFile      string `yaml:"domains_file"`
+	AllowedCIDRsFile string `yaml:"allowed_cidrs_file"`
+
+	// TelegramBot optionally lets allowlisted Telegram admins add
+	// domains/IPs remotely. Leave Token empty to disable it.
+	TelegramBot struct {
+		Token    string  `yaml:"token"`
+		AdminIDs []int64 `yaml:"admin_ids"`
+	} `yaml:"telegram_bot"`
 
 	publicIP   net.IP
 	publicIPv6 net.IP
@@ -38,10 +56,58 @@ func Load(path string) (*Config, error) {
 	if err := yaml.Unmarshal(data, &c); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
+
+	dir := filepath.Dir(path)
+	if c.DomainsFile != "" {
+		lines, err := readLines(resolvePath(dir, c.DomainsFile))
+		if err != nil {
+			return nil, fmt.Errorf("read domains_file: %w", err)
+		}
+		c.Domains = append(c.Domains, lines...)
+	}
+	if c.AllowedCIDRsFile != "" {
+		lines, err := readLines(resolvePath(dir, c.AllowedCIDRsFile))
+		if err != nil {
+			return nil, fmt.Errorf("read allowed_cidrs_file: %w", err)
+		}
+		c.AllowedCIDRs = append(c.AllowedCIDRs, lines...)
+	}
+
 	if err := c.validate(); err != nil {
 		return nil, err
 	}
 	return &c, nil
+}
+
+// resolvePath resolves a config-referenced file path relative to the
+// directory the config file itself lives in, so config.yaml stays portable
+// regardless of the process's working directory.
+func resolvePath(configDir, path string) string {
+	if filepath.IsAbs(path) {
+		return path
+	}
+	return filepath.Join(configDir, path)
+}
+
+// readLines reads a plain-text list file: one entry per line, blank lines
+// and lines starting with "#" are ignored.
+func readLines(path string) ([]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	var lines []string
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		lines = append(lines, line)
+	}
+	return lines, sc.Err()
 }
 
 func (c *Config) validate() error {
@@ -87,15 +153,7 @@ func (c *Config) validate() error {
 	}
 
 	for _, entry := range c.AllowedCIDRs {
-		cidr := entry
-		if !strings.Contains(cidr, "/") {
-			if ip := net.ParseIP(entry); ip != nil && ip.To4() != nil {
-				cidr = entry + "/32"
-			} else {
-				cidr = entry + "/128"
-			}
-		}
-		_, n, err := net.ParseCIDR(cidr)
+		n, err := parseCIDR(entry)
 		if err != nil {
 			return fmt.Errorf("invalid allowed_cidrs entry %q: %w", entry, err)
 		}
@@ -103,6 +161,19 @@ func (c *Config) validate() error {
 	}
 
 	return nil
+}
+
+func parseCIDR(entry string) (*net.IPNet, error) {
+	cidr := entry
+	if !strings.Contains(cidr, "/") {
+		if ip := net.ParseIP(entry); ip != nil && ip.To4() != nil {
+			cidr = entry + "/32"
+		} else {
+			cidr = entry + "/128"
+		}
+	}
+	_, n, err := net.ParseCIDR(cidr)
+	return n, err
 }
 
 // PublicIPAddr returns the IPv4 handed out for smart-routed domains' A records.
