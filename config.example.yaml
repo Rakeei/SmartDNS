@@ -33,7 +33,7 @@ allowed_cidrs_file: allowed_ips.txt
 # token must be >= 32 chars, e.g. `openssl rand -hex 32`. cert/key are the
 # TLS files for the hostname the controller calls.
 admin_api:
-  listen: ":8443"
+  listen: ":2053"
   token: ""
   cert_file: /etc/smartdns/certs/origin.pem
   key_file: /etc/smartdns/certs/origin.key

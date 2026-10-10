@@ -2,9 +2,9 @@ name = "smartdns-admin-bot"
 main = "src/index.js"
 compatibility_date = "2026-01-01"
 
-# Set to the proxied (orange-cloud) hostname of the VPS admin API, port 8443.
+# Set to the proxied (orange-cloud) hostname of the VPS admin API, port 2053.
 [vars]
-API_BASE = "https://api.example.com:8443"
+API_BASE = "https://api.example.com:2053"
 # Comma-separated Telegram user IDs allowed to use the bot.
 ADMIN_IDS = "123456789"
 
