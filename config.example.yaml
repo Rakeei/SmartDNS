@@ -28,14 +28,15 @@ upstream_dns:
 domains_file: domains.txt
 allowed_cidrs_file: allowed_ips.txt
 
-# Optional: lets allowlisted Telegram admins add domains/IPs remotely by
-# messaging the bot with /add_domain <domain>, /add_ip <ip-or-cidr>, or
-# /list. Leave token empty (or omit this section) to disable the bot
-# entirely. Get a token from @BotFather and admin user IDs from
-# @userinfobot.
-telegram_bot:
+# Optional: token-protected HTTPS admin API used by the remote bot (Cloudflare
+# Worker) to list and add domains/IPs. Leave token empty to disable it.
+# token must be >= 32 chars, e.g. `openssl rand -hex 32`. cert/key are the
+# TLS files for the hostname the controller calls.
+admin_api:
+  listen: ":8443"
   token: ""
-  admin_ids: []
+  cert_file: /etc/smartdns/certs/origin.pem
+  key_file: /etc/smartdns/certs/origin.key
 
 # Copy this file to config.yaml and fill in your real values.
 # config.yaml is gitignored so your real public IP / client allowlist never

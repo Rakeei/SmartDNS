@@ -1,0 +1,20 @@
+name = "smartdns-admin-bot"
+main = "src/index.js"
+compatibility_date = "2026-01-01"
+
+# Set to the proxied (orange-cloud) hostname of the VPS admin API, port 8443.
+[vars]
+API_BASE = "https://api.example.com:8443"
+# Comma-separated Telegram user IDs allowed to use the bot.
+ADMIN_IDS = "123456789"
+
+# Create with: npx wrangler kv namespace create STATE
+# then paste the returned id here.
+[[kv_namespaces]]
+binding = "STATE"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+
+# Secrets (set with `npx wrangler secret put <NAME>`, never commit them):
+#   BOT_TOKEN       - Telegram bot token from @BotFather
+#   WEBHOOK_SECRET  - random string, also passed to setWebhook as secret_token
+#   ADMIN_TOKEN     - same value as admin_api.token in the VPS config.yaml

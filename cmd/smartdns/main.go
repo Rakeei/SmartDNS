@@ -10,12 +10,12 @@ import (
 	"os/signal"
 	"syscall"
 
+	"smartdns/internal/adminapi"
 	"smartdns/internal/config"
 	"smartdns/internal/dnsserver"
 	"smartdns/internal/httpproxy"
 	"smartdns/internal/resolver"
 	"smartdns/internal/sniproxy"
-	"smartdns/internal/telegrambot"
 )
 
 func main() {
@@ -41,8 +41,8 @@ func main() {
 
 	go watchReload(*cfgPath, store, res)
 
-	if cfg.TelegramBot.Token != "" {
-		startTelegramBot(*cfgPath, cfg, store, res)
+	if cfg.AdminAPI.Token != "" {
+		startAdminAPI(*cfgPath, cfg, store, res)
 	}
 
 	errCh := make(chan error, 3)
@@ -102,26 +102,25 @@ func reloadConfig(cfgPath string, store *config.Store, res *resolver.Resolver) (
 	return newCfg, nil
 }
 
-// startTelegramBot wires up the optional Telegram admin bot: it lets
-// allowlisted admin user IDs add domains/IPs to the live config via
-// /add_domain and /add_ip. Disabled (with a log line explaining why) if the
-// config doesn't declare domains_file/allowed_cidrs_file, since there'd be
-// nowhere to persist the addition.
-func startTelegramBot(cfgPath string, cfg *config.Config, store *config.Store, res *resolver.Resolver) {
+// startAdminAPI serves the token-protected admin API in the background. Its
+// failures are logged, never fatal, so a broken admin endpoint can't take
+// DNS/proxy serving down with it.
+func startAdminAPI(cfgPath string, cfg *config.Config, store *config.Store, res *resolver.Resolver) {
 	domainsFile, cidrsFile, err := config.ListFiles(cfgPath)
 	if err != nil {
-		log.Printf("telegram bot: disabled: %v", err)
+		log.Printf("admin api: disabled: %v", err)
 		return
 	}
 
-	bot := telegrambot.New(cfg.TelegramBot.Token, cfg.TelegramBot.AdminIDs, domainsFile, cidrsFile,
-		func() error {
-			_, err := reloadConfig(cfgPath, store, res)
-			return err
-		})
+	srv := adminapi.New(cfg.AdminAPI.Token, domainsFile, cidrsFile, func() error {
+		_, err := reloadConfig(cfgPath, store, res)
+		return err
+	})
 
 	go func() {
-		log.Printf("telegram bot: listening for admin commands (%d admins)", len(cfg.TelegramBot.AdminIDs))
-		bot.Run()
+		log.Printf("admin api: listening on %s", cfg.AdminAPI.Listen)
+		if err := srv.ListenAndServeTLS(cfg.AdminAPI.Listen, cfg.AdminAPI.CertFile, cfg.AdminAPI.KeyFile); err != nil {
+			log.Printf("admin api: stopped: %v", err)
+		}
 	}()
 }

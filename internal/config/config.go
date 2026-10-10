@@ -34,12 +34,15 @@ type Config struct {
 	DomainsFile      string `yaml:"domains_file"`
 	AllowedCIDRsFile string `yaml:"allowed_cidrs_file"`
 
-	// TelegramBot optionally lets allowlisted Telegram admins add
-	// domains/IPs remotely. Leave Token empty to disable it.
-	TelegramBot struct {
-		Token    string  `yaml:"token"`
-		AdminIDs []int64 `yaml:"admin_ids"`
-	} `yaml:"telegram_bot"`
+	// AdminAPI is an optional token-protected HTTPS endpoint that lets a
+	// remote controller (e.g. the Cloudflare Worker bot) add domains/IPs.
+	// Disabled when Token is empty.
+	AdminAPI struct {
+		Listen   string `yaml:"listen"`
+		Token    string `yaml:"token"`
+		CertFile string `yaml:"cert_file"`
+		KeyFile  string `yaml:"key_file"`
+	} `yaml:"admin_api"`
 
 	publicIP   net.IP
 	publicIPv6 net.IP
@@ -133,6 +136,18 @@ func (c *Config) validate() error {
 		c.publicIPv6 = net.ParseIP(c.PublicIPv6)
 		if c.publicIPv6 == nil || c.publicIPv6.To4() != nil {
 			return fmt.Errorf("invalid public_ipv6 (must be IPv6): %s", c.PublicIPv6)
+		}
+	}
+
+	if c.AdminAPI.Token != "" {
+		if len(c.AdminAPI.Token) < 32 {
+			return fmt.Errorf("admin_api.token must be at least 32 characters")
+		}
+		if c.AdminAPI.CertFile == "" || c.AdminAPI.KeyFile == "" {
+			return fmt.Errorf("admin_api requires cert_file and key_file")
+		}
+		if c.AdminAPI.Listen == "" {
+			c.AdminAPI.Listen = ":8443"
 		}
 	}
 

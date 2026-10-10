@@ -8,11 +8,13 @@ services:
       - "53:53/tcp"
       - "80:80/tcp"
       - "443:443/tcp"
+      - "8443:8443/tcp"
     volumes:
       - ./config.yaml:/etc/smartdns/config.yaml:ro
       # Not :ro — `smartdns add-domain` / `smartdns add-ip` write to these.
       - ./domains.txt:/etc/smartdns/domains.txt
       - ./allowed_ips.txt:/etc/smartdns/allowed_ips.txt
+      - ./certs:/etc/smartdns/certs:ro
     environment:
       # Backstop for the Go garbage collector: keep the heap under the
       # container's memory limit instead of relying on GOGC alone, so the
@@ -26,3 +28,11 @@ services:
     mem_limit: 256m
     mem_reservation: 128m
     cpus: 1.0
+    # Cap the json-file log driver so a noisy/long-running container can't
+    # fill the disk: 3 files x 10MB = 30MB max for this service's logs,
+    # rotated automatically instead of growing forever.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
