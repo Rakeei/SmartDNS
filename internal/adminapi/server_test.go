@@ -126,7 +126,7 @@ func TestAddIPAcceptsCIDR(t *testing.T) {
 
 func TestMethodNotAllowed(t *testing.T) {
 	s, _, _, _ := newTestServer(t)
-	rec := do(t, s, http.MethodDelete, "/v1/domains", testToken, "")
+	rec := do(t, s, http.MethodPut, "/v1/domains", testToken, "")
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("got %d", rec.Code)
 	}
@@ -213,4 +213,32 @@ func readLinesForTest(path string) ([]string, error) {
 		out = append(out, l)
 	}
 	return out, nil
+}
+
+func TestRemoveEntryReloadsAndRollsBackOnFailure(t *testing.T) {
+	s, domains, _, reloads := newTestServer(t)
+	rec := do(t, s, http.MethodDelete, "/v1/domains", testToken, `{"value":"example.com"}`)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"removed":true`) {
+		t.Fatalf("remove: %d %s", rec.Code, rec.Body.String())
+	}
+	if *reloads != 1 {
+		t.Fatalf("reloads = %d", *reloads)
+	}
+	data, _ := os.ReadFile(domains)
+	if strings.Contains(string(data), "example.com") {
+		t.Fatalf("entry still on disk")
+	}
+
+	dir := t.TempDir()
+	d2 := filepath.Join(dir, "d.txt")
+	os.WriteFile(d2, []byte("example.com\n"), 0644)
+	bad := New(testToken, d2, filepath.Join(dir, "c.txt"), func() error { return os.ErrInvalid })
+	rec = do(t, bad, http.MethodDelete, "/v1/domains", testToken, `{"value":"example.com"}`)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("failed reload: got %d", rec.Code)
+	}
+	data, _ = os.ReadFile(d2)
+	if !strings.Contains(string(data), "example.com") {
+		t.Fatalf("removal not rolled back after failed reload")
+	}
 }

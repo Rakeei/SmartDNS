@@ -81,6 +81,11 @@ type entryRequest struct {
 	Value string `json:"value"`
 }
 
+type removeResponse struct {
+	Removed bool   `json:"removed"`
+	Value   string `json:"value"`
+}
+
 type addResponse struct {
 	Added bool   `json:"added"`
 	Value string `json:"value"`
@@ -111,47 +116,90 @@ func (s *Server) listOrAdd(w http.ResponseWriter, r *http.Request, file string,
 		writeJSON(w, http.StatusOK, map[string]any{"entries": entries})
 
 	case http.MethodPost:
-		var req entryRequest
-		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
-		dec.DisallowUnknownFields()
-		if err := dec.Decode(&req); err != nil {
-			writeErr(w, http.StatusBadRequest, "invalid JSON body")
+		val, ok := readValue(w, r, normalize)
+		if !ok {
 			return
 		}
-		val := normalize(req.Value)
-
 		s.mu.Lock()
 		defer s.mu.Unlock()
 
 		added, err := add(val)
 		if err != nil {
-			if errors.Is(err, config.ErrInvalidEntry) {
-				writeErr(w, http.StatusBadRequest, err.Error())
-				return
-			}
-			log.Printf("admin api: write list: %v", err)
-			writeErr(w, http.StatusInternalServerError, "internal error")
+			s.writeWriteErr(w, err)
 			return
 		}
 		if added {
 			if err := s.reload(); err != nil {
 				// Roll the entry back so a retry actually re-attempts the reload
 				// instead of being reported as a duplicate.
-				if rbErr := config.RemoveEntry(file, val); rbErr != nil {
+				if _, rbErr := config.RemoveLine(file, val); rbErr != nil {
 					log.Printf("admin api: rollback failed, entry %q remains on disk: %v", val, rbErr)
 				}
-				log.Printf("admin api: reload failed, change for %q rolled back: %v", val, err)
-				writeErr(w, http.StatusInternalServerError, "config reload failed; change was not applied")
+				s.writeReloadErr(w, val, err)
 				return
 			}
 			log.Printf("admin api: added %q and reloaded", val)
 		}
 		writeJSON(w, http.StatusOK, addResponse{Added: added, Value: val})
 
+	case http.MethodDelete:
+		val, ok := readValue(w, r, normalize)
+		if !ok {
+			return
+		}
+		s.mu.Lock()
+		defer s.mu.Unlock()
+
+		removed, err := config.RemoveLine(file, val)
+		if err != nil {
+			log.Printf("admin api: remove from list: %v", err)
+			writeErr(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		if removed {
+			if err := s.reload(); err != nil {
+				// Put the entry back so the file and the running config agree.
+				if _, rbErr := add(val); rbErr != nil {
+					log.Printf("admin api: restore after failed reload failed for %q: %v", val, rbErr)
+				}
+				s.writeReloadErr(w, val, err)
+				return
+			}
+			log.Printf("admin api: removed %q and reloaded", val)
+		}
+		writeJSON(w, http.StatusOK, removeResponse{Removed: removed, Value: val})
+
 	default:
-		w.Header().Set("Allow", "GET, POST")
+		w.Header().Set("Allow", "GET, POST, DELETE")
 		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
+}
+
+func readValue(w http.ResponseWriter, r *http.Request, normalize func(string) string) (string, bool) {
+	var req entryRequest
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid JSON body")
+		return "", false
+	}
+	return normalize(req.Value), true
+}
+
+// writeWriteErr maps add errors: syntax problems are the client's fault
+// (400), anything else is a server fault whose details stay in the log.
+func (s *Server) writeWriteErr(w http.ResponseWriter, err error) {
+	if errors.Is(err, config.ErrInvalidEntry) {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	log.Printf("admin api: write list: %v", err)
+	writeErr(w, http.StatusInternalServerError, "internal error")
+}
+
+func (s *Server) writeReloadErr(w http.ResponseWriter, val string, err error) {
+	log.Printf("admin api: reload failed, change for %q rolled back: %v", val, err)
+	writeErr(w, http.StatusInternalServerError, "config reload failed; change was not applied")
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

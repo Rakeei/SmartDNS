@@ -96,15 +96,69 @@ async function handleCallback(cq, env) {
     console.log("rejected unauthorized button press", userId);
     return;
   }
-  switch (cq.data) {
+  const data = String(cq.data || "");
+  if (/^rm:\d+$/.test(data)) {
+    return removeByIndex(env, userId, chatId, Number(data.slice(3)));
+  }
+  switch (data) {
     case "add_domain":
       return startFlow(env, userId, chatId, "domain");
     case "add_ip":
       return startFlow(env, userId, chatId, "ip");
+    case "rm_domain":
+      return showRemovePicker(env, chatId, userId, "domain");
+    case "rm_ip":
+      return showRemovePicker(env, chatId, userId, "ip");
     case "list":
       await clearState(env, userId);
       return listEntries(env, chatId);
   }
+}
+
+// The picked list is stored in KV and buttons refer to it by index, because
+// Telegram limits callback_data to 64 bytes and domains can be longer.
+const PICK_LIMIT = 50;
+
+async function showRemovePicker(env, chatId, userId, kind) {
+  const res = await callAPI(env, "GET", listPath(kind));
+  if (!res.ok) return reply(env, chatId, "خطا در خواندن لیست از سرور.");
+  const all = res.body.entries || [];
+  if (all.length === 0) return reply(env, chatId, "لیست خالیه.");
+  const items = all.slice(0, PICK_LIMIT);
+  await env.STATE.put(pickKey(userId), JSON.stringify({ kind, items }), {
+    expirationTtl: STATE_TTL_SECONDS,
+  });
+  const rows = items.map((v, i) => [{ text: `🗑 ${v}`, callback_data: `rm:${i}` }]);
+  const note = all.length > PICK_LIMIT ? `\n(فقط ${PICK_LIMIT} مورد اول نشون داده شد)` : "";
+  return telegram(env, "sendMessage", {
+    chat_id: chatId,
+    text: `کدوم ${kind === "domain" ? "دامنه" : "آی‌پی"} رو حذف کنم؟${note}`,
+    reply_markup: { inline_keyboard: rows },
+  });
+}
+
+async function removeByIndex(env, userId, chatId, index) {
+  const raw = await env.STATE.get(pickKey(userId));
+  if (!raw) return reply(env, chatId, "این لیست منقضی شده؛ دوباره از منو انتخاب کن.");
+  const { kind, items } = JSON.parse(raw);
+  const value = items[index];
+  if (value === undefined) return reply(env, chatId, "این مورد معتبر نیست؛ دوباره از منو انتخاب کن.");
+  await env.STATE.delete(pickKey(userId));
+
+  const res = await callAPI(env, "DELETE", listPath(kind), { value });
+  if (!res.ok) {
+    return reply(env, chatId, `حذف نشد (${res.status || "بدون پاسخ"}): ${res.error || ""}`.trim());
+  }
+  if (!res.body.removed) return reply(env, chatId, `این مورد دیگه توی لیست نیست: ${value}`);
+  return reply(env, chatId, `🗑 حذف و اعمال شد: ${value}`);
+}
+
+function listPath(kind) {
+  return kind === "domain" ? "/v1/domains" : "/v1/ips";
+}
+
+function pickKey(userId) {
+  return `pick:${userId}`;
 }
 
 async function startFlow(env, userId, chatId, kind) {
@@ -218,6 +272,8 @@ async function sendMenu(env, chatId) {
       inline_keyboard: [
         [{ text: "➕ افزودن دامنه", callback_data: "add_domain" }],
         [{ text: "➕ افزودن آی‌پی", callback_data: "add_ip" }],
+        [{ text: "🗑 حذف دامنه", callback_data: "rm_domain" }],
+        [{ text: "🗑 حذف آی‌پی", callback_data: "rm_ip" }],
         [{ text: "📋 لیست فعلی", callback_data: "list" }],
       ],
     },

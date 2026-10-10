@@ -15,6 +15,11 @@ services:
       - ./domains.txt:/etc/smartdns/domains.txt
       - ./allowed_ips.txt:/etc/smartdns/allowed_ips.txt
       - ./certs:/etc/smartdns/certs:ro
+    sysctls:
+      # tcp_congestion_control is per network-namespace, so setting it on
+      # the host alone doesn't affect this container's own sockets (which
+      # is where the proxy's actual client/upstream TCP connections live).
+      - net.ipv4.tcp_congestion_control=bbr
     environment:
       # Backstop for the Go garbage collector: keep the heap under the
       # container's memory limit instead of relying on GOGC alone, so the

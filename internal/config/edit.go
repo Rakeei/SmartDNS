@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"os"
@@ -79,27 +80,45 @@ func AppendCIDR(path, entry string) (bool, error) {
 	return appendUnique(path, entry)
 }
 
-// RemoveEntry deletes every line exactly equal to value from the list file at
-// path. It's used to roll back an add whose reload failed.
-func RemoveEntry(path, value string) error {
-	data, err := os.ReadFile(path)
+// RemoveLine removes the first entry equal to value from the list file at
+// path (comments and blank lines are left untouched), rewriting the file in
+// place. It reports whether an entry was actually removed.
+//
+// The file is rewritten via os.WriteFile, which truncates and rewrites the
+// existing file in place rather than renaming a new one over it — important
+// because domains.txt/allowed_ips.txt are typically Docker single-file bind
+// mounts, and a rename-based rewrite (as e.g. `sed -i` does) would silently
+// swap the underlying inode out from under the mount.
+func RemoveLine(path, value string) (bool, error) {
+	f, err := os.Open(path)
 	if err != nil {
-		return err
+		return false, err
 	}
-	lines := strings.Split(string(data), "\n")
-	out := make([]string, 0, len(lines))
-	changed := false
-	for _, l := range lines {
-		if strings.TrimSpace(l) == value {
-			changed = true
+	var lines []string
+	removed := false
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := sc.Text()
+		if !removed && strings.TrimSpace(line) == value {
+			removed = true
 			continue
 		}
-		out = append(out, l)
+		lines = append(lines, line)
 	}
-	if !changed {
-		return nil
+	scErr := sc.Err()
+	f.Close()
+	if scErr != nil {
+		return false, scErr
 	}
-	return os.WriteFile(path, []byte(strings.Join(out, "\n")), 0644)
+	if !removed {
+		return false, nil
+	}
+
+	content := strings.Join(lines, "\n")
+	if len(lines) > 0 {
+		content += "\n"
+	}
+	return true, os.WriteFile(path, []byte(content), 0644)
 }
 
 func appendUnique(path, value string) (bool, error) {
